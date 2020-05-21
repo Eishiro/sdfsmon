@@ -1,0 +1,212 @@
+
+
+#library(renv) # setup a package library for a project
+
+
+library(shiny)
+
+#library(tidyverse)
+library(dplyr)
+library(stringr)
+#library(magrittr)
+library(lubridate) #datetime data manuluplation
+library(scales)    #handling datetime in ggplot
+library(DT)
+
+library(plotly) 
+
+
+#load App data from local
+
+##graph configuration
+#time_resol_major <-("30 mins")
+time_resol_minor <-("5 mins")
+#date_format <- ("%H:%M")
+
+
+#formating data
+f_format_data <- function(df){
+    
+    df <- df %>% rename(Date = "Date of Monitoring Snapshot",
+                        Time = "Time of Monitoring Snapshot",
+                        Application_Server_Instance = "Application Server Instance")
+    
+    ##Change date for column time
+    lubridate::date(df$Time) =df$Date
+    
+    ##Application server factor
+    df2 <-df %>%  
+        mutate(datetime = lubridate::as_datetime(df$Time, tz = "UTC"),
+               Application_Server_Instance = as.factor(Application_Server_Instance ),
+               CPU_Total_usage = `CPU Utilization (User)` + `CPU Utilization (System)` ) %>% 
+        select(datetime,everything())
+    
+    names(df2) <- names(df2) %>% str_replace_all(c(" "="_" , "[()]" = "", "%"= "percent"))
+    
+    df2$Date <- as_date(df$Date)
+    df2$Time <- hms::as.hms(df$Time,tz = "UTC")
+    
+    return (df2)
+}    
+
+#df_app <- f_format_data(df_raw)
+#select input and radiobutton choices
+
+############
+#shiny
+#############
+
+#allow to upload 20MB
+options(shiny.maxRequestSize = 20*1024^2)
+
+# Define UI
+ui <- fluidPage(#theme = shinytheme("yeti"),
+    
+    # Application title
+    titlePanel("SDF/SMON data visualization"),
+    
+    fluidRow(
+        column(width = 5, 
+               #File uploading
+               fileInput(inputId = "file",
+                         label = "upload excel File",
+                         width = "500px") # accept = c(".csv")               
+        ),
+        column(width = 2, offset = 0,
+               
+               #SUBMIT Button
+               actionButton("submit", label="!!!START!!!!!",icon("paper-plane"), 
+                            style="color: #fff; background-color: #337ab7; border-color: #2e6da4")  
+        )
+    ),
+    
+    
+    #datetime selection
+    htmlOutput(outputId = "select_datatime_range"),
+    
+    # Display data
+    tabsetPanel(type = "tabs",
+                
+                tabPanel("Selected Data",
+                         #checkbox for showing datatable
+                         htmlOutput(outputId = "data_for_table"),
+                         #diplay data table
+                         DTOutput("table")
+                ),
+                tabPanel("Graph",
+                         fluidRow(
+                             column(5,
+                                    #selection for graph column
+                                    htmlOutput(outputId = "data_for_graph")),
+                             column(2,
+                                    numericInput(inputId = "threshold",
+                                                 label = h5("Enter threshold？"),
+                                                 value = 1)),
+                             column(2,
+                                    textInput(inputId = "x_axis_resol",
+                                              label = h5("Time resolution"),
+                                              value = "30 mins")),
+                             column(3,
+                                    textInput(inputId = "x_data_format",
+                                              label = h5("X-axis format"),
+                                              value = "%H:%M"))
+                         ),
+                         plotlyOutput("graph")
+                )
+    )
+)
+
+
+
+# Define server logic
+server <- function(input, output, session) {
+    
+    observeEvent(input$submit,{
+        #read a dropped data
+        read_file = reactive({
+            readxl::read_xlsx(input$file$datapath) %>% 
+                f_format_data()  
+        })
+        
+        output$select_datatime_range = renderUI({
+            data <- read_file()
+            sliderInput(inputId="selected_datatime_range",
+                        label = h5("Filter the datetime range"),
+                        min = data$datetime %>% min() ,
+                        max = data$datetime %>% max(),
+                        value = c(data$datetime %>% min() ,data$datetime %>% max()),
+                        timezone = "UTC", #-0000
+                        #size
+                        width = '80%'
+            )
+        })
+        
+        #checkbox for diplay table
+        output$data_for_table= renderUI({ 
+            checkboxGroupInput(inputId = "selected_data_column",
+                               label= h3("choose data to diplay"),
+                               choices = colnames(read_file()),
+                               selected = c( "Date","Time","Application_Server_Instance","Number_of_Active_Work_Processes","CPU_Total_usage", "Free_Memory_MB_incl._Filesystem_Cache"),
+                               inline = TRUE)
+        })    
+        
+        #diaplay the table
+        output$table<- DT::renderDT(
+            read_file() %>% 
+                dplyr::filter( between ( datetime ,input$selected_datatime_range[1], input$selected_datatime_range[2])) %>% 
+                dplyr::select(input$selected_data_column) ,
+            #filter = 'top',
+            options =list(
+                scrollY = TRUE, #"800px",
+                scrollX = TRUE, #"800px",
+                #autoWidth = TRUE,
+                pageLength = 20,
+                scrollCollapse = TRUE)
+        )
+        
+        
+        #choose the column to create a graph
+        output$data_for_graph= renderUI({ 
+            selectInput(inputId = "selected_data_column1",
+                        label = h5("Choose the data for visualization"), 
+                        choices = colnames(read_file()),
+                        selected = "Free_Memory_MB_incl._Filesystem_Cache"
+            )
+        })
+        
+        #graph
+        output$graph <- renderPlotly({
+            
+            df_app2 <- read_file() %>% 
+                mutate(threshold = input$threshold)
+            
+            g_app <- ggplot(df_app2 %>% dplyr::filter( between ( datetime ,input$selected_datatime_range[1], input$selected_datatime_range[2])) , 
+                            aes_string(x="datetime", y= input$selected_data_column1)) +
+                geom_line(aes( color = Application_Server_Instance),size = 1) +
+                #user input threshold
+                geom_hline(data = df_app2,aes(yintercept=threshold), colour="salmon") +
+                scale_x_datetime(breaks = date_breaks(input$x_axis_resol), #time_resol_major
+                                 
+                                 minor_breaks = date_breaks(time_resol_minor),
+                                 labels = date_format(input$x_data_format))+ #date_format  
+                theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+                theme_bw() +
+                labs(title = input$selected_column1)
+            
+            p <- ggplotly(g_app,height = 500)
+            return(p)
+        })
+        
+    })
+}
+
+
+
+
+
+
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+
