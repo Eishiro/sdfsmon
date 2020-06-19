@@ -21,7 +21,7 @@ RUN apt-get update && \
 
 # copy necessary files
 ## app folder
-COPY /app /app
+COPY ./app /app
 ## renv.lock file
 COPY /app/renv.lock /renv.lock
 
@@ -29,7 +29,7 @@ COPY /app/renv.lock /renv.lock
 #RUN Rscript -e 'install.packages("renv")'
 #RUN Rscript -e 'renv::restore()'
 
-RUN Rscript -e 'install.packages(c("dplyr","stringr","lubridate","scales","DT", "plotly")
+RUN Rscript -e 'install.packages(c("dplyr","stringr","lubridate","scales","DT", "plotly"))'
 
  
 
@@ -37,4 +37,4 @@ RUN Rscript -e 'install.packages(c("dplyr","stringr","lubridate","scales","DT", 
 EXPOSE 3838
 
 # run app on container start
-CMD ["R", "-e", "shiny::runApp('/app', host = '0.0.0.0', port = 3838)"]
+CMD ["R", "-e", "shiny::runApp('./app', host = '0.0.0.0', port = 3838)"]
